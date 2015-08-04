@@ -8,7 +8,7 @@ module Spree
     mapping _all: {"index_analyzer" => "nGram_analyzer", "search_analyzer" => "whitespace_analyzer"} do
       indexes :name, type: 'multi_field' do
         indexes :name, type: 'string', analyzer: 'nGram_analyzer', boost: 100
-        indexes :untouched, type: 'string', include_in_all: false, index: 'not_analyzed'
+        indexes :untouched, type: 'string', include_in_all: false, index: 'not_analyzed', boost: 100
       end
       indexes :description, analyzer: 'snowball'
       indexes :available_on, type: 'date', format: 'dateOptionalTime', include_in_all: false
@@ -20,19 +20,19 @@ module Spree
 
     def as_indexed_json(options={})
       result = as_json({
-        methods: [:price, :sku],
-        only: [:available_on, :description, :name],
-        include: {
-          variants: {
-            only: [:sku],
-            include: {
-              option_values: {
-                only: [:name, :presentation]
+              methods: [:price, :sku],
+              only: [:available_on, :description, :name],
+              include: {
+                  variants: {
+                      only: [:sku],
+                      include: {
+                          option_values: {
+                              only: [:name, :presentation]
+                          }
+                      }
+                  }
               }
-            }
-          }
-        }
-      })
+          })
       result[:properties] = property_list unless property_list.empty?
       result[:taxon_ids] = taxons.map(&:self_and_ancestors).flatten.uniq.map(&:id) unless taxons.empty?
       result
@@ -78,7 +78,7 @@ module Spree
       def to_hash
         q = { match_all: {} }
         unless query.blank? # nil or empty
-          q = { query_string: { query: query, fields: ['name^5','description','sku'], default_operator: 'AND', use_dis_max: true } }
+          q = { query_string: { query: query, fields: ['name.untouched','description','sku'], default_operator: 'AND', use_dis_max: true } }
         end
         query = q
 
@@ -94,40 +94,42 @@ module Spree
         end
 
         sorting = case @sorting
-        when "name_asc"
-          [ {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }}, "_score" ]
-        when "name_desc"
-          [ {"name.untouched" => { order: "desc" }}, {"price" => { order: "asc" }}, "_score" ]
-        when "price_asc"
-          [ {"price" => { order: "asc" }}, {"name.untouched" => { order: "asc" }}, "_score" ]
-        when "price_desc"
-          [ {"price" => { order: "desc" }}, {"name.untouched" => { order: "asc" }}, "_score" ]
-        when "score"
-          [ "_score", {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }} ]
-        else
-          [ {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }}, "_score" ]
+          when "name_asc"
+            [ {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }}, "_score" ]
+          when "name_desc"
+            [ {"name.untouched" => { order: "desc" }}, {"price" => { order: "asc" }}, "_score" ]
+          when "price_asc"
+            [ {"price" => { order: "asc" }}, {"name.untouched" => { order: "asc" }}, "_score" ]
+          when "price_desc"
+            [ {"price" => { order: "desc" }}, {"name.untouched" => { order: "asc" }}, "_score" ]
+          when "score"
+            [ "_score", {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }} ]
+          else
+            [ "_score", {"name.untouched" => { order: "asc" }}, {"price" => { order: "asc" }} ]
         end
 
         # facets
         facets = {
-          price: { statistical: { field: "price" } },
-          properties: { terms: { field: "properties", order: "count", size: 1000000 } },
-          taxon_ids: { terms: { field: "taxon_ids", size: 1000000 } }
+            price: { statistical: { field: "price" } },
+            properties: { terms: { field: "properties", order: "count", size: 1000000 } },
+            taxon_ids: { terms: { field: "taxon_ids", size: 1000000 } }
         }
 
         # basic skeleton
         result = {
-          min_score: 0.1,
-          query: { filtered: {} },
-          sort: sorting,
-          from: from,
-          facets: facets
+            min_score: 0.1,
+            query: { filtered: {} },
+            sort: sorting,
+            from: from,
+            facets: facets
         }
 
+
+        taxons = self.taxons.blank? ? [65, 15, 16, 19, 17, 18] : self.taxons
         # add query and filters to filtered
         result[:query][:filtered][:query] = query
         # taxon and property filters have an effect on the facets
-        and_filter << { terms: { taxon_ids: taxons } } unless taxons.empty?
+        and_filter << { terms: { taxon_ids: taxons } } unless taxons.reject(&:blank?).empty?
         # only return products that are available
         and_filter << { range: { available_on: { lte: "now" } } }
         result[:query][:filtered][:filter] = { "and" => and_filter } unless and_filter.empty?
